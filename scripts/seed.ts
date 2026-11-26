@@ -1403,6 +1403,42 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   console.log("Created 7 enrollments.");
 
+  // ─── Reviews ───
+  // Only enrolled students can review a course. One review per student/course.
+  db.insert(schema.reviews)
+    .values([
+      {
+        userId: students[0].id, // Emma
+        courseId: course1.id,
+        rating: 5,
+        content:
+          "The TypeScript foundations are explained really clearly, and the exercises made everything click. Highly recommend!",
+        createdAt: daysAgo(20),
+        updatedAt: daysAgo(20),
+      },
+      {
+        userId: students[1].id, // James
+        courseId: course1.id,
+        rating: 4,
+        content:
+          "Great course overall. I would have liked a few more real-world examples in the later modules.",
+        createdAt: daysAgo(12),
+        updatedAt: daysAgo(12),
+      },
+      {
+        userId: students[2].id, // Olivia
+        courseId: course2.id,
+        rating: 5,
+        content:
+          "The REST API module is practical and well paced. I built the project alongside the videos and learned a lot.",
+        createdAt: daysAgo(9),
+        updatedAt: daysAgo(9),
+      },
+    ])
+    .run();
+
+  console.log("Created 3 reviews.");
+
   // ─── Lesson Progress ───
 
   // Helper to mark lessons as complete
@@ -1735,6 +1771,7 @@ You've completed the Building REST APIs course. You now have the skills to build
   );
   console.log("  Quizzes: 3");
   console.log("  Enrollments: 7");
+  console.log("  Reviews: 3");
   console.log("  Purchases: 6 (5 individual + 1 team)");
   console.log("  Teams: 1 (with 5 coupons)");
 }

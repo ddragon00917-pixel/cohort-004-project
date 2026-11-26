@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Link, useSearchParams } from "react-router";
 import { toast } from "sonner";
+import { z } from "zod";
 import type { Route } from "./+types/courses.$slug";
 import {
   getCourseBySlug,
@@ -42,6 +43,35 @@ import { formatDuration, formatPrice } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
 import { resolveCountry } from "~/lib/country.server";
 import { calculatePppPrice, getCountryTierInfo } from "~/lib/ppp";
+import { parseFormData } from "~/lib/validation";
+import {
+  createReview,
+  updateReview,
+  deleteReview,
+  getReviewsForCourse,
+  getCourseRating,
+} from "~/services/reviewService";
+import { MAX_REVIEW_LENGTH, MIN_REVIEW_LENGTH } from "~/lib/review";
+import {
+  CourseReviews,
+  RatingSummary,
+  type CourseReview,
+} from "~/components/course-reviews";
+
+const reviewSchema = z.object({
+  rating: z.coerce
+    .number()
+    .int("Please choose a star rating.")
+    .min(1, "Please choose a star rating.")
+    .max(5, "Please choose a star rating."),
+  content: z
+    .string()
+    .trim()
+    .min(MIN_REVIEW_LENGTH, `Review must be at least ${MIN_REVIEW_LENGTH} characters.`)
+    .max(MAX_REVIEW_LENGTH, `Review must be at most ${MAX_REVIEW_LENGTH} characters.`),
+});
+
+const reviewIdSchema = z.coerce.number().int().positive();
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.course?.title ?? "Course";
@@ -102,6 +132,12 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     : courseWithDetails.price;
   const tierInfo = getCountryTierInfo(country);
 
+  const reviews = getReviewsForCourse(course.id);
+  const rating = getCourseRating(course.id);
+  const existingReview: CourseReview | undefined = currentUserId
+    ? reviews.find((review) => review.userId === currentUserId)
+    : undefined;
+
   return {
     course: courseWithDetails,
     salesCopyHtml,
@@ -113,10 +149,78 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    reviews,
+    rating,
+    existingReview,
   };
 }
 
-// No action — enrollment is handled via the purchase confirmation page
+export async function action({ params, request }: Route.ActionArgs) {
+  const course = getCourseBySlug(params.slug);
+  if (!course) {
+    throw data("Course not found.", { status: 404 });
+  }
+
+  const currentUserId = await getCurrentUserId(request);
+  if (!currentUserId) {
+    throw data("You must be logged in to review a course.", { status: 401 });
+  }
+  if (!isUserEnrolled(currentUserId, course.id)) {
+    throw data("You must be enrolled in this course to leave a review.", {
+      status: 403,
+    });
+  }
+
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+  const parsedId = reviewIdSchema.safeParse(formData.get("reviewId"));
+
+  if (intent === "delete-review") {
+    if (!parsedId.success) {
+      return data({ errors: { reviewId: "Invalid review." } }, { status: 400 });
+    }
+    const deleted = deleteReview(parsedId.data, currentUserId);
+    if (!deleted) {
+      throw data("Review not found.", { status: 404 });
+    }
+    return { success: true };
+  }
+
+  if (intent !== "submit-review" && intent !== "update-review") {
+    throw data("Invalid action.", { status: 400 });
+  }
+
+  const parsed = parseFormData(formData, reviewSchema);
+  if (!parsed.success) {
+    return data({ errors: parsed.errors }, { status: 400 });
+  }
+
+  try {
+    if (intent === "update-review") {
+      if (!parsedId.success) {
+        return data({ errors: { reviewId: "Invalid review." } }, { status: 400 });
+      }
+      const updated = updateReview(
+        parsedId.data,
+        currentUserId,
+        parsed.data.rating,
+        parsed.data.content
+      );
+      if (!updated) {
+        throw data("Review not found.", { status: 404 });
+      }
+    } else {
+      createReview(currentUserId, course.id, parsed.data.rating, parsed.data.content);
+    }
+  } catch (error) {
+    if (error instanceof Error) {
+      return data({ errors: { content: error.message } }, { status: 400 });
+    }
+    throw error;
+  }
+
+  return { success: true };
+}
 
 export function HydrateFallback() {
   return (
@@ -181,6 +285,9 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    reviews,
+    rating,
+    existingReview,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -320,6 +427,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               {formatDuration(totalDuration, true, false, false)} total
             </span>
           )}
+          <RatingSummary rating={rating} />
         </div>
       </div>
 
@@ -357,6 +465,14 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               lessonProgressMap={lessonProgressMap}
             />
           </div>
+
+          <CourseReviews
+            slug={course.slug}
+            enrolled={enrolled}
+            reviews={reviews}
+            rating={rating}
+            existingReview={existingReview}
+          />
         </div>
 
         {/* Right column: progress/enrollment card */}
