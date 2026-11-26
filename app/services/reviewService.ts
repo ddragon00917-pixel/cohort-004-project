@@ -32,6 +32,14 @@ export function getUserReviewForCourse(userId: number, courseId: number) {
     .get();
 }
 
+export function getUserReviewById(reviewId: number, userId: number) {
+  return db
+    .select()
+    .from(reviews)
+    .where(and(eq(reviews.id, reviewId), eq(reviews.userId, userId)))
+    .get();
+}
+
 export function createReview(
   userId: number,
   courseId: number,

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
 
@@ -17,6 +18,7 @@ import {
   updateReview,
   deleteReview,
   getUserReviewForCourse,
+  getUserReviewById,
   getReviewsForCourse,
   getCourseRating,
   getCourseRatings,
@@ -119,6 +121,39 @@ describe("reviewService", () => {
 
       expect(getUserReviewForCourse(base.user.id, base.course.id)?.id).toBe(review.id);
       expect(getUserReviewForCourse(999, base.course.id)).toBeUndefined();
+    });
+
+    it("looks up a review by id only for its author", () => {
+      const other = createStudent("Other Student", "other@example.com");
+      const review = createReview(base.user.id, base.course.id, 4, "Really solid course");
+
+      expect(getUserReviewById(review.id, base.user.id)?.id).toBe(review.id);
+      expect(getUserReviewById(review.id, other.id)).toBeUndefined();
+    });
+  });
+
+  describe("cascade behavior", () => {
+    it("deletes reviews when their author is deleted but keeps other authors' reviews", () => {
+      const other = createStudent("Other Student", "other@example.com");
+      createReview(base.user.id, base.course.id, 5, "Excellent, very clear lessons");
+      createReview(other.id, base.course.id, 4, "Really solid course overall");
+
+      testDb.delete(schema.users).where(eq(schema.users.id, base.user.id)).run();
+
+      const remaining = getReviewsForCourse(base.course.id);
+      expect(remaining).toHaveLength(1);
+      expect(remaining[0].userName).toBe("Other Student");
+    });
+
+    it("deletes reviews when their course is deleted", () => {
+      const otherCourse = createSecondCourse();
+      createReview(base.user.id, base.course.id, 5, "Excellent, very clear lessons");
+      createReview(base.user.id, otherCourse.id, 4, "Really solid course overall");
+
+      testDb.delete(schema.courses).where(eq(schema.courses.id, otherCourse.id)).run();
+
+      expect(getReviewsForCourse(base.course.id)).toHaveLength(1);
+      expect(getReviewsForCourse(otherCourse.id)).toHaveLength(0);
     });
   });
 

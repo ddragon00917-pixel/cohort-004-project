@@ -15,7 +15,7 @@ import {
   getNextIncompleteLesson,
 } from "~/services/progressService";
 import { getCurrentUserId } from "~/lib/session";
-import { LessonProgressStatus } from "~/db/schema";
+import { CourseStatus, LessonProgressStatus } from "~/db/schema";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -50,6 +50,7 @@ import {
   deleteReview,
   getReviewsForCourse,
   getCourseRating,
+  getUserReviewById,
 } from "~/services/reviewService";
 import { MAX_REVIEW_LENGTH, MIN_REVIEW_LENGTH } from "~/lib/review";
 import {
@@ -132,11 +133,16 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     : courseWithDetails.price;
   const tierInfo = getCountryTierInfo(country);
 
-  const reviews = getReviewsForCourse(course.id);
-  const rating = getCourseRating(course.id);
-  const existingReview: CourseReview | undefined = currentUserId
-    ? reviews.find((review) => review.userId === currentUserId)
-    : undefined;
+  // Reviews are public social proof, so they only exist on published courses.
+  const showReviews = course.status === CourseStatus.Published;
+  const reviews = showReviews ? getReviewsForCourse(course.id) : [];
+  const rating = showReviews
+    ? getCourseRating(course.id)
+    : { average: 0, count: 0 };
+  const existingReview: CourseReview | undefined =
+    showReviews && currentUserId
+      ? reviews.find((review) => review.userId === currentUserId)
+      : undefined;
 
   return {
     course: courseWithDetails,
@@ -152,6 +158,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     reviews,
     rating,
     existingReview,
+    showReviews,
   };
 }
 
@@ -161,14 +168,15 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw data("Course not found.", { status: 404 });
   }
 
+  if (course.status !== CourseStatus.Published) {
+    throw data("Reviews are only available for published courses.", {
+      status: 403,
+    });
+  }
+
   const currentUserId = await getCurrentUserId(request);
   if (!currentUserId) {
     throw data("You must be logged in to review a course.", { status: 401 });
-  }
-  if (!isUserEnrolled(currentUserId, course.id)) {
-    throw data("You must be enrolled in this course to leave a review.", {
-      status: 403,
-    });
   }
 
   const formData = await request.formData();
@@ -179,15 +187,23 @@ export async function action({ params, request }: Route.ActionArgs) {
     if (!parsedId.success) {
       return data({ errors: { reviewId: "Invalid review." } }, { status: 400 });
     }
-    const deleted = deleteReview(parsedId.data, currentUserId);
-    if (!deleted) {
+    // Edits/deletes authorize by ownership, not current enrollment.
+    if (!getUserReviewById(parsedId.data, currentUserId)) {
       throw data("Review not found.", { status: 404 });
     }
-    return { success: true };
+    deleteReview(parsedId.data, currentUserId);
+    return { success: true, intent };
   }
 
   if (intent !== "submit-review" && intent !== "update-review") {
     throw data("Invalid action.", { status: 400 });
+  }
+
+  // Only creating a review requires that the student is currently enrolled.
+  if (intent === "submit-review" && !isUserEnrolled(currentUserId, course.id)) {
+    throw data("You must be enrolled in this course to leave a review.", {
+      status: 403,
+    });
   }
 
   const parsed = parseFormData(formData, reviewSchema);
@@ -200,15 +216,15 @@ export async function action({ params, request }: Route.ActionArgs) {
       if (!parsedId.success) {
         return data({ errors: { reviewId: "Invalid review." } }, { status: 400 });
       }
-      const updated = updateReview(
+      if (!getUserReviewById(parsedId.data, currentUserId)) {
+        throw data("Review not found.", { status: 404 });
+      }
+      updateReview(
         parsedId.data,
         currentUserId,
         parsed.data.rating,
         parsed.data.content
       );
-      if (!updated) {
-        throw data("Review not found.", { status: 404 });
-      }
     } else {
       createReview(currentUserId, course.id, parsed.data.rating, parsed.data.content);
     }
@@ -219,7 +235,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     throw error;
   }
 
-  return { success: true };
+  return { success: true, intent };
 }
 
 export function HydrateFallback() {
@@ -288,6 +304,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     reviews,
     rating,
     existingReview,
+    showReviews,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
@@ -427,7 +444,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               {formatDuration(totalDuration, true, false, false)} total
             </span>
           )}
-          <RatingSummary rating={rating} />
+          {showReviews && <RatingSummary rating={rating} />}
         </div>
       </div>
 
@@ -466,13 +483,15 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
             />
           </div>
 
-          <CourseReviews
-            slug={course.slug}
-            enrolled={enrolled}
-            reviews={reviews}
-            rating={rating}
-            existingReview={existingReview}
-          />
+          {showReviews && (
+            <CourseReviews
+              slug={course.slug}
+              enrolled={enrolled}
+              reviews={reviews}
+              rating={rating}
+              existingReview={existingReview}
+            />
+          )}
         </div>
 
         {/* Right column: progress/enrollment card */}

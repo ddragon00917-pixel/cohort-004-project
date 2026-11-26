@@ -268,10 +268,10 @@ export const reviews = sqliteTable(
     id: integer("id").primaryKey({ autoIncrement: true }),
     userId: integer("user_id")
       .notNull()
-      .references(() => users.id),
+      .references(() => users.id, { onDelete: "cascade" }),
     courseId: integer("course_id")
       .notNull()
-      .references(() => courses.id),
+      .references(() => courses.id, { onDelete: "cascade" }),
     rating: integer("rating").notNull(),
     content: text("content").notNull(),
     createdAt: text("created_at")

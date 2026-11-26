@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useFetcher } from "react-router";
 import { toast } from "sonner";
-import { Star, Trash2 } from "lucide-react";
+import { Pencil, Star, Trash2 } from "lucide-react";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Textarea } from "~/components/ui/textarea";
@@ -21,9 +21,18 @@ export type CourseReview = {
   updatedAt: string;
 };
 
+type ReviewIntent = "submit-review" | "update-review" | "delete-review";
+
 type ReviewActionData = {
   success?: boolean;
+  intent?: ReviewIntent;
   errors?: Record<string, string>;
+};
+
+const SUCCESS_MESSAGES: Record<ReviewIntent, string> = {
+  "submit-review": "Thanks for your review!",
+  "update-review": "Review updated.",
+  "delete-review": "Review deleted.",
 };
 
 function Stars({ rating, className = "" }: { rating: number; className?: string }) {
@@ -69,25 +78,133 @@ export function CourseReviews({
   existingReview?: CourseReview;
 }) {
   const fetcher = useFetcher<ReviewActionData>();
-  const [selectedRating, setSelectedRating] = useState(
-    existingReview?.rating ?? 0
-  );
-  const [content, setContent] = useState(existingReview?.content ?? "");
+  const [selectedRating, setSelectedRating] = useState(0);
+  const [content, setContent] = useState("");
+  const [isEditing, setIsEditing] = useState(false);
+  const handledResult = useRef<ReviewActionData | null>(null);
   const isSubmitting = fetcher.state !== "idle";
   const errors = fetcher.data?.errors;
 
+  // A review's text lives in its list card, not in a lingering form. Only one
+  // toast per completed action, chosen from the intent the action actually ran.
   useEffect(() => {
-    if (existingReview) {
-      setSelectedRating(existingReview.rating);
-      setContent(existingReview.content);
+    if (
+      fetcher.state === "idle" &&
+      fetcher.data?.success &&
+      handledResult.current !== fetcher.data
+    ) {
+      handledResult.current = fetcher.data;
+      toast.success(
+        fetcher.data.intent
+          ? SUCCESS_MESSAGES[fetcher.data.intent]
+          : "Review saved."
+      );
+      setSelectedRating(0);
+      setContent("");
+      setIsEditing(false);
     }
-  }, [existingReview?.id]);
+  }, [fetcher.state, fetcher.data]);
 
-  useEffect(() => {
-    if (fetcher.state === "idle" && fetcher.data?.success) {
-      toast.success(existingReview ? "Review updated." : "Thanks for your review!");
-    }
-  }, [fetcher.state, fetcher.data, existingReview]);
+  function startEditing(review: CourseReview) {
+    setSelectedRating(review.rating);
+    setContent(review.content);
+    setIsEditing(true);
+  }
+
+  function cancelEditing() {
+    setIsEditing(false);
+    setSelectedRating(0);
+    setContent("");
+  }
+
+  function renderForm(reviewId?: number) {
+    const isEdit = reviewId !== undefined;
+
+    return (
+      <fetcher.Form method="post" action={`/courses/${slug}`}>
+        {isEdit && <input type="hidden" name="reviewId" value={reviewId} />}
+        <input type="hidden" name="rating" value={selectedRating} />
+
+        <fieldset className="mb-4">
+          <legend className="mb-2 text-sm font-medium">Your rating</legend>
+          <div className="flex items-center gap-1">
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button
+                key={star}
+                type="button"
+                aria-label={`${star} ${star === 1 ? "star" : "stars"}`}
+                aria-pressed={selectedRating === star}
+                onClick={() => setSelectedRating(star)}
+                className="rounded p-0.5 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Star
+                  className={`size-7 ${star <= selectedRating ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30"}`}
+                />
+              </button>
+            ))}
+            {selectedRating > 0 && (
+              <span className="ml-2 text-sm text-muted-foreground">
+                {selectedRating} / 5
+              </span>
+            )}
+          </div>
+          {errors?.rating && (
+            <p className="mt-1 text-sm text-destructive">{errors.rating}</p>
+          )}
+        </fieldset>
+
+        <label htmlFor="review-content" className="mb-2 block text-sm font-medium">
+          Your review
+        </label>
+        <Textarea
+          id="review-content"
+          name="content"
+          value={content}
+          onChange={(event) => setContent(event.target.value)}
+          placeholder="What did you like? What could be improved?"
+          minLength={MIN_REVIEW_LENGTH}
+          maxLength={MAX_REVIEW_LENGTH}
+          rows={4}
+          className="mb-1"
+        />
+        <div className="mb-4 flex items-center justify-between">
+          {errors?.content ? (
+            <p className="text-sm text-destructive">{errors.content}</p>
+          ) : (
+            <span />
+          )}
+          <span className="text-xs text-muted-foreground">
+            {content.length}/{MAX_REVIEW_LENGTH}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <Button
+            type="submit"
+            name="intent"
+            value={isEdit ? "update-review" : "submit-review"}
+            disabled={isSubmitting || selectedRating === 0}
+          >
+            {isSubmitting
+              ? "Saving..."
+              : isEdit
+                ? "Save Changes"
+                : "Submit Review"}
+          </Button>
+          {isEdit && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={cancelEditing}
+              disabled={isSubmitting}
+            >
+              Cancel
+            </Button>
+          )}
+        </div>
+      </fetcher.Form>
+    );
+  }
 
   return (
     <section className="mt-10">
@@ -96,106 +213,15 @@ export function CourseReviews({
         <RatingSummary rating={rating} />
       </div>
 
-      {enrolled && (
+      {enrolled && !existingReview && (
         <Card className="mb-6">
           <CardHeader>
-            <h3 className="font-semibold">
-              {existingReview ? "Your Review" : "Leave a Review"}
-            </h3>
+            <h3 className="font-semibold">Leave a Review</h3>
             <p className="text-sm text-muted-foreground">
-              {existingReview
-                ? "You can update or remove your review at any time."
-                : "Share your experience with other students."}
+              Share your experience with other students.
             </p>
           </CardHeader>
-          <CardContent>
-            <fetcher.Form method="post" action={`/courses/${slug}`}>
-              {existingReview && (
-                <input type="hidden" name="reviewId" value={existingReview.id} />
-              )}
-              <input type="hidden" name="rating" value={selectedRating} />
-
-              <fieldset className="mb-4">
-                <legend className="mb-2 text-sm font-medium">Your rating</legend>
-                <div className="flex items-center gap-1">
-                  {[1, 2, 3, 4, 5].map((star) => (
-                    <button
-                      key={star}
-                      type="button"
-                      aria-label={`${star} ${star === 1 ? "star" : "stars"}`}
-                      aria-pressed={selectedRating === star}
-                      onClick={() => setSelectedRating(star)}
-                      className="rounded p-0.5 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Star
-                        className={`size-7 ${star <= selectedRating ? "fill-amber-400 text-amber-400" : "text-muted-foreground/30"}`}
-                      />
-                    </button>
-                  ))}
-                  {selectedRating > 0 && (
-                    <span className="ml-2 text-sm text-muted-foreground">
-                      {selectedRating} / 5
-                    </span>
-                  )}
-                </div>
-                {errors?.rating && (
-                  <p className="mt-1 text-sm text-destructive">{errors.rating}</p>
-                )}
-              </fieldset>
-
-              <label htmlFor="review-content" className="mb-2 block text-sm font-medium">
-                Your review
-              </label>
-              <Textarea
-                id="review-content"
-                name="content"
-                value={content}
-                onChange={(event) => setContent(event.target.value)}
-                placeholder="What did you like? What could be improved?"
-                minLength={MIN_REVIEW_LENGTH}
-                maxLength={MAX_REVIEW_LENGTH}
-                rows={4}
-                className="mb-1"
-              />
-              <div className="mb-4 flex items-center justify-between">
-                {errors?.content ? (
-                  <p className="text-sm text-destructive">{errors.content}</p>
-                ) : (
-                  <span />
-                )}
-                <span className="text-xs text-muted-foreground">
-                  {content.length}/{MAX_REVIEW_LENGTH}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <Button
-                  type="submit"
-                  name="intent"
-                  value={existingReview ? "update-review" : "submit-review"}
-                  disabled={isSubmitting || selectedRating === 0}
-                >
-                  {isSubmitting
-                    ? "Saving..."
-                    : existingReview
-                      ? "Update Review"
-                      : "Submit Review"}
-                </Button>
-                {existingReview && (
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    name="intent"
-                    value="delete-review"
-                    disabled={isSubmitting}
-                  >
-                    <Trash2 className="mr-1.5 size-4" />
-                    Delete
-                  </Button>
-                )}
-              </div>
-            </fetcher.Form>
-          </CardContent>
+          <CardContent>{renderForm()}</CardContent>
         </Card>
       )}
 
@@ -205,39 +231,98 @@ export function CourseReviews({
         </p>
       ) : (
         <div className="space-y-4">
-          {reviews.map((review) => (
-            <Card key={review.id}>
-              <CardContent className="p-5">
-                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <span className="flex items-center gap-2">
-                    <UserAvatar
-                      name={review.userName}
-                      avatarUrl={review.userAvatarUrl}
-                      className="size-7"
-                    />
-                    <span className="text-sm font-medium">
-                      {review.userName}
-                      {review.id === existingReview?.id && " (you)"}
-                    </span>
-                  </span>
-                  <span className="flex items-center gap-2">
-                    <Stars rating={review.rating} />
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(review.createdAt).toLocaleDateString("en-US", {
-                        year: "numeric",
-                        month: "short",
-                        day: "numeric",
-                        timeZone: "UTC",
-                      })}
-                    </span>
-                  </span>
-                </div>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">
-                  {review.content}
-                </p>
-              </CardContent>
-            </Card>
-          ))}
+          {reviews.map((review) => {
+            const isOwn = review.id === existingReview?.id;
+            const editingThis = isOwn && isEditing;
+
+            return (
+              <Card key={review.id}>
+                <CardContent className="p-5">
+                  {editingThis ? (
+                    <>
+                      <h3 className="mb-4 font-semibold">Edit your review</h3>
+                      {renderForm(review.id)}
+                    </>
+                  ) : (
+                    <>
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <span className="flex items-center gap-2">
+                          <UserAvatar
+                            name={review.userName}
+                            avatarUrl={review.userAvatarUrl}
+                            className="size-7"
+                          />
+                          <span className="text-sm font-medium">
+                            {review.userName}
+                            {isOwn && " (you)"}
+                          </span>
+                        </span>
+                        <span className="flex flex-wrap items-center gap-2">
+                          {isOwn && (
+                            <span className="flex items-center gap-1">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => startEditing(review)}
+                                disabled={isSubmitting}
+                              >
+                                <Pencil className="size-3.5" />
+                                Edit
+                              </Button>
+                              <fetcher.Form
+                                method="post"
+                                action={`/courses/${slug}`}
+                                onSubmit={(event) => {
+                                  if (
+                                    !window.confirm(
+                                      "Delete your review? This cannot be undone."
+                                    )
+                                  ) {
+                                    event.preventDefault();
+                                  }
+                                }}
+                              >
+                                <input
+                                  type="hidden"
+                                  name="reviewId"
+                                  value={review.id}
+                                />
+                                <Button
+                                  type="submit"
+                                  name="intent"
+                                  value="delete-review"
+                                  variant="ghost"
+                                  size="sm"
+                                  disabled={isSubmitting}
+                                  className="text-destructive hover:text-destructive"
+                                >
+                                  <Trash2 className="size-3.5" />
+                                  Delete
+                                </Button>
+                              </fetcher.Form>
+                            </span>
+                          )}
+                          <Stars rating={review.rating} />
+                          <span className="text-xs text-muted-foreground">
+                            {new Date(review.createdAt).toLocaleDateString("en-US", {
+                              year: "numeric",
+                              month: "short",
+                              day: "numeric",
+                              timeZone: "UTC",
+                            })}
+                          </span>
+                        </span>
+                      </div>
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed">
+                        {review.content}
+                      </p>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </section>
